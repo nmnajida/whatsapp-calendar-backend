@@ -1,20 +1,26 @@
 {
-  "name": "backend",
+  "name": "whatsapp-calendar-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "WhatsApp Calendar Backend with Google OAuth and ICS Feeds",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "keywords": ["calendar", "whatsapp", "google", "oauth", "ics"],
+  "author": "Neil",
+  "license": "MIT",
   "dependencies": {
-    "cors": "^2.8.6",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1",
-    "express-session": "^1.19.0",
-    "googleapis": "^171.0.0"
+    "express": "^4.18.2",
+    "googleapis": "^128.0.0",
+    "express-session": "^1.17.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
