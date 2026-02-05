@@ -8,6 +8,9 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust Railway proxy
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(cors({
   origin: '*',
