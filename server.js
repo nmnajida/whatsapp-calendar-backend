@@ -3,6 +3,7 @@ const express = require('express');
 const { google } = require('googleapis');
 const session = require('express-session');
 const cors = require('cors');
+const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
@@ -26,13 +27,19 @@ app.use(session({
 }));
 
 // In-memory storage for subscription feeds (replace with database in production)
-const subscriptionFeeds = new Map();
+// const subscriptionFeeds = new Map();
 
 // Google OAuth Configuration
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
   process.env.REDIRECT_URI || 'http://localhost:3000/auth/callback'
+);
+
+// Supabase Configuration
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
 );
 
 // Scopes define what access you need
@@ -201,14 +208,23 @@ app.post('/api/calendars', async (req, res) => {
     
     const calendarId = newCalendar.data.id;
     
-    // Store in subscription feeds map
-    subscriptionFeeds.set(calendarId, {
-      id: calendarId,
-      name: name,
-      description: description,
-      events: [],
-      googleCalendarId: calendarId
-    });
+    // Store in Supabase database
+    const { data: dbCalendar, error: dbError } = await supabase
+        .from('calendars')
+        .insert([{
+            google_calendar_id: calendarId,
+            name: name,
+            description: description,
+            owner_email: req.session.userEmail || 'unknown' // We'll improve this later
+  }])
+  .select()
+  .single();
+
+if (dbError) {
+  console.error('Error saving to database:', dbError);
+  // Calendar created in Google, but not in DB - log it but continue
+}
+
     
     // Return calendar with subscription URLs
     res.json({
@@ -289,20 +305,28 @@ app.post('/api/calendars/:calendarId/events', async (req, res) => {
       requestBody: event
     });
     
-    // Update subscription feed
-    const feed = subscriptionFeeds.get(calendarId);
-    if (feed) {
-      feed.events.push({
-        id: response.data.id,
+    // Save event to database
+    const { data: dbEvent, error: eventError } = await supabase
+    .from('events')
+    .insert([{
+        calendar_id: (await supabase
+        .from('calendars')
+        .select('id')
+        .eq('google_calendar_id', calendarId)
+        .single()).data.id,
+        google_event_id: response.data.id,
         title: title,
         description: description,
         location: location,
-        date: date,
-        time: time,
-        endTime: endTime,
-        googleEventId: response.data.id
-      });
-      subscriptionFeeds.set(calendarId, feed);
+        event_date: date,
+        start_time: time,
+        end_time: endTime
+    }])
+    .select()
+    .single();
+
+    if (eventError) {
+    console.error('Error saving event to database:', eventError);
     }
     
     res.json({
@@ -384,13 +408,50 @@ app.post('/api/calendars/:calendarId/share', async (req, res) => {
 // CALENDAR SUBSCRIPTION FEED ROUTES (NEW)
 // ============================================
 
-// ROUTE 9: Get calendar subscription feed (ICS format)
-app.get('/api/subscriptions/:calendarId/feed.ics', async (req, res) => {
-  const { calendarId } = req.params;
+    // ROUTE 9: Get calendar subscription feed (ICS format)
+    app.get('/api/subscriptions/:calendarId/feed.ics', async (req, res) => {
+    const { calendarId } = req.params;
+    
+    // Get calendar from database
+    const { data: calendar, error: calError } = await supabase
+        .from('calendars')
+        .select('*')
+        .eq('google_calendar_id', calendarId)
+        .single();
+
+    if (calError) {
+    console.error('Error fetching calendar:', calError);
+    return res.status(404).send('Calendar not found');
+    }
   
-  // Try to get from subscription feeds first
-  let calendarData = subscriptionFeeds.get(calendarId);
-  
+    // Get events from database
+    const { data: events, error: eventsError } = await supabase
+        .from('events')
+        .select('*')
+        .eq('calendar_id', calendar.id)
+        .order('event_date', { ascending: true });
+
+    if (eventsError) {
+    console.error('Error fetching events:', eventsError);
+    }
+
+    // Format for ICS generation
+    let calendarData = {
+    id: calendar.google_calendar_id,
+    name: calendar.name,
+    description: calendar.description,
+    events: (events || []).map(e => ({
+        id: e.google_event_id,
+        title: e.title,
+        description: e.description,
+        location: e.location,
+        date: e.event_date,
+        time: e.start_time,
+        endTime: e.end_time,
+        googleEventId: e.google_event_id
+    }))
+    };
+
   // If not in subscription feeds but authenticated, try to fetch from Google Calendar
   if (!calendarData && req.session && req.session.tokens) {
     try {
@@ -486,11 +547,17 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // ROUTE 13: Health check
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  // Count calendars in database
+  const { count } = await supabase
+    .from('calendars')
+    .select('*', { count: 'exact', head: true });
+  
   res.json({ 
     status: 'ok', 
-    subscriptionFeeds: subscriptionFeeds.size,
-    googleOAuth: !!process.env.GOOGLE_CLIENT_ID
+    calendars: count || 0,
+    googleOAuth: !!process.env.GOOGLE_CLIENT_ID,
+    database: 'supabase'
   });
 });
 
