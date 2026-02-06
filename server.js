@@ -36,6 +36,8 @@ const oauth2Client = new google.auth.OAuth2(
   process.env.REDIRECT_URI || 'http://localhost:3000/auth/callback'
 );
 
+console.log('🔍 REDIRECT_URI:', process.env.REDIRECT_URI);
+
 // Supabase Configuration
 const supabase = createClient(
   process.env.SUPABASE_URL,
