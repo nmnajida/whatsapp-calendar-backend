@@ -356,16 +356,19 @@ app.delete('/api/calendars/:calendarId/events/:eventId', async (req, res) => {
       eventId: eventId
     });
     
-    // Update subscription feed
-    const feed = subscriptionFeeds.get(calendarId);
-    if (feed) {
-      feed.events = feed.events.filter(e => e.id != eventId && e.googleEventId != eventId);
-      subscriptionFeeds.set(calendarId, feed);
+    // Delete from database
+    const { error: deleteError } = await supabase
+      .from('events')
+      .delete()
+      .eq('google_event_id', eventId);
+    
+    if (deleteError) {
+      console.error('Error deleting event from database:', deleteError);
     }
     
     res.json({ 
       success: true,
-      message: 'Event deleted from Google Calendar and subscription feed'
+      message: 'Event deleted from Google Calendar and database'
     });
   } catch (error) {
     console.error('Error deleting event:', error);
@@ -494,8 +497,7 @@ app.post('/api/calendars/:calendarId/share', async (req, res) => {
         events: events
       };
       
-      // Cache it
-      subscriptionFeeds.set(calendarId, calendarData);
+      // Data is already in database from Google Calendar sync
     } catch (error) {
       console.error('Error fetching from Google Calendar:', error);
     }
@@ -513,13 +515,13 @@ app.post('/api/calendars/:calendarId/share', async (req, res) => {
   res.send(icsContent);
 });
 
-// ROUTE 10: Update subscription feed manually (for non-Google calendars)
+// ROUTE 10: Update subscription feed manually (DEPRECATED - using database now)
+// This route is no longer needed since we use Supabase database
+// Keeping it for backwards compatibility but it does nothing
 app.post('/api/subscriptions/:calendarId', (req, res) => {
   const { calendarId } = req.params;
-  const calendarData = req.body;
   
-  subscriptionFeeds.set(calendarId, calendarData);
-  
+  // Just return success - data is in database
   res.json({
     success: true,
     calendarId,
