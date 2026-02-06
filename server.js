@@ -129,12 +129,21 @@ END:VEVENT
 // ============================================
 
 // ROUTE 1: Initiate OAuth flow
+// ROUTE 1: Initiate OAuth flow
 app.get('/auth/google', (req, res) => {
+  console.log('🔍 OAuth Config Check:', {
+    clientId: process.env.GOOGLE_CLIENT_ID?.substring(0, 20) + '...',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET ? 'SET' : 'MISSING',
+    redirectUri: process.env.REDIRECT_URI
+  });
+  
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline', // Gets refresh token
     scope: SCOPES,
     prompt: 'consent' // Force consent screen to get refresh token
   });
+  
+  console.log('🔍 Generated Auth URL:', authUrl);
   
   res.redirect(authUrl);
 });
@@ -158,7 +167,8 @@ app.get('/auth/callback', async (req, res) => {
     oauth2Client.setCredentials(tokens);
     
     // Redirect to frontend success page
-    res.redirect('http://localhost:3001/calendar?auth=success');
+    const frontendUrl = process.env.FRONTEND_URL || 'https://whatsapp-calendar-frontend-omega.vercel.app';
+        res.redirect(`${frontendUrl}/calendar?auth=success`);
   } catch (error) {
     console.error('Error getting tokens:', error);
     res.status(500).send('Authentication failed');
