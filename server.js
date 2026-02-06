@@ -187,6 +187,7 @@ app.get('/api/calendars', async (req, res) => {
 
 // ROUTE 4: Create a new calendar (Google Calendar + Subscription Feed)
 app.post('/api/calendars', async (req, res) => {
+    console.log('🎯 CREATE CALENDAR REQUEST RECEIVED:', req.body); // ADD THIS LINE
   if (!req.session.tokens) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
