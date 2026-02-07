@@ -21,11 +21,17 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-session-secret',
   resave: false,
-  saveUninitialized: true,
-  cookie: { secure: false } // Set to true in production with HTTPS
+  saveUninitialized: false,
+  cookie: { 
+    secure: true,
+    httpOnly: true,
+    sameSite: 'none',
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
 }));
 
 // In-memory storage for subscription feeds (replace with database in production)
