@@ -168,7 +168,7 @@ app.get('/auth/callback', async (req, res) => {
     
     // Redirect to frontend success page
     const frontendUrl = process.env.FRONTEND_URL || 'https://whatsapp-calendar-frontend-omega.vercel.app';
-        res.redirect(`${frontendUrl}/calendar?auth=success`);
+        res.redirect(`${frontendUrl}/?auth=success`);
   } catch (error) {
     console.error('Error getting tokens:', error);
     res.status(500).send('Authentication failed');
