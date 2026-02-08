@@ -1,13 +1,16 @@
-// server.js - Universal Calendar Backend with Magic Link Authentication
+// server.js - Universal Calendar Backend with Token-Based Authentication
 const express = require('express');
-const session = require('express-session');
 const cors = require('cors');
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// JWT Secret (use SESSION_SECRET or generate new one)
+const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET || 'your-jwt-secret';
 
 // Trust Railway proxy
 app.set('trust proxy', 1);
@@ -22,24 +25,33 @@ app.use(cors({
 
 app.use(express.json());
 
-// Session Configuration
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'your-session-secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { 
-    secure: true,
-    httpOnly: true,
-    sameSite: 'none',
-    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-  }
-}));
-
 // Supabase Configuration
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
+
+// ============================================
+// MIDDLEWARE
+// ============================================
+
+// Authenticate JWT token
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+  if (!token) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid token' });
+    }
+    req.userEmail = user.email;
+    next();
+  });
+}
 
 // ============================================
 // HELPER FUNCTIONS
@@ -48,6 +60,11 @@ const supabase = createClient(
 // Generate random token
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
+}
+
+// Generate JWT
+function generateJWT(email) {
+  return jwt.sign({ email }, JWT_SECRET, { expiresIn: '7d' });
 }
 
 // Send magic link email via Resend
@@ -184,7 +201,7 @@ app.post('/auth/request-magic-link', async (req, res) => {
   }
 });
 
-// ROUTE 2: Verify magic link token
+// ROUTE 2: Verify magic link token and return JWT
 app.get('/auth/verify/:token', async (req, res) => {
   const { token } = req.params;
 
@@ -218,47 +235,37 @@ app.get('/auth/verify/:token', async (req, res) => {
       .update({ last_login: new Date().toISOString() })
       .eq('email', magicLink.email);
 
-    // Create session
-    req.session.userEmail = magicLink.email;
-    req.session.authenticated = true;
+    // Generate JWT token
+    const jwtToken = generateJWT(magicLink.email);
 
-    // Redirect to frontend
+    // Redirect to frontend with JWT token
     const frontendUrl = process.env.FRONTEND_URL || 'https://whatsapp-calendar-frontend-omega.vercel.app';
-    res.redirect(`${frontendUrl}/?auth=success`);
+    res.redirect(`${frontendUrl}/?token=${jwtToken}`);
   } catch (error) {
     console.error('Error verifying magic link:', error);
     res.status(500).send('Authentication failed');
   }
 });
 
-// ROUTE 3: Check authentication status
-app.get('/api/auth/status', (req, res) => {
-  if (req.session.authenticated) {
-    res.json({ 
-      authenticated: true,
-      email: req.session.userEmail 
-    });
-  } else {
-    res.json({ authenticated: false });
-  }
+// ROUTE 3: Check authentication status (with token)
+app.get('/api/auth/status', authenticateToken, (req, res) => {
+  res.json({ 
+    authenticated: true,
+    email: req.userEmail 
+  });
 });
 
-// ROUTE 4: Logout
+// ROUTE 4: Logout (just for compatibility - frontend clears token)
 app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy();
-  res.json({ success: true });
+  res.json({ success: true, message: 'Logged out' });
 });
 
 // ============================================
-// CALENDAR ROUTES
+// CALENDAR ROUTES (Protected with JWT)
 // ============================================
 
 // ROUTE 5: Create a new calendar
-app.post('/api/calendars', async (req, res) => {
-  if (!req.session.authenticated) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
-
+app.post('/api/calendars', authenticateToken, async (req, res) => {
   const { name, description } = req.body;
 
   try {
@@ -266,10 +273,10 @@ app.post('/api/calendars', async (req, res) => {
     const { data: calendar, error: calError } = await supabase
       .from('calendars')
       .insert([{
-        google_calendar_id: generateToken().substring(0, 16), // Generate unique ID
+        google_calendar_id: generateToken().substring(0, 16),
         name: name,
         description: description,
-        owner_email: req.session.userEmail
+        owner_email: req.userEmail
       }])
       .select()
       .single();
@@ -298,16 +305,12 @@ app.post('/api/calendars', async (req, res) => {
 });
 
 // ROUTE 6: Get user's calendars
-app.get('/api/calendars', async (req, res) => {
-  if (!req.session.authenticated) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
-
+app.get('/api/calendars', authenticateToken, async (req, res) => {
   try {
     const { data: calendars, error } = await supabase
       .from('calendars')
       .select('*')
-      .eq('owner_email', req.session.userEmail);
+      .eq('owner_email', req.userEmail);
 
     if (error) {
       console.error('Error fetching calendars:', error);
@@ -322,11 +325,7 @@ app.get('/api/calendars', async (req, res) => {
 });
 
 // ROUTE 7: Create event
-app.post('/api/calendars/:calendarId/events', async (req, res) => {
-  if (!req.session.authenticated) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
-
+app.post('/api/calendars/:calendarId/events', authenticateToken, async (req, res) => {
   const { calendarId } = req.params;
   const { title, description, location, date, time, endTime } = req.body;
 
@@ -336,7 +335,7 @@ app.post('/api/calendars/:calendarId/events', async (req, res) => {
       .from('calendars')
       .select('id')
       .eq('google_calendar_id', calendarId)
-      .eq('owner_email', req.session.userEmail)
+      .eq('owner_email', req.userEmail)
       .single();
 
     if (calError || !calendar) {
@@ -379,11 +378,7 @@ app.post('/api/calendars/:calendarId/events', async (req, res) => {
 });
 
 // ROUTE 8: Delete event
-app.delete('/api/calendars/:calendarId/events/:eventId', async (req, res) => {
-  if (!req.session.authenticated) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
-
+app.delete('/api/calendars/:calendarId/events/:eventId', authenticateToken, async (req, res) => {
   const { calendarId, eventId } = req.params;
 
   try {
@@ -392,7 +387,7 @@ app.delete('/api/calendars/:calendarId/events/:eventId', async (req, res) => {
       .from('calendars')
       .select('id')
       .eq('google_calendar_id', calendarId)
-      .eq('owner_email', req.session.userEmail)
+      .eq('owner_email', req.userEmail)
       .single();
 
     if (!calendar) {
@@ -419,7 +414,7 @@ app.delete('/api/calendars/:calendarId/events/:eventId', async (req, res) => {
 });
 
 // ============================================
-// SUBSCRIPTION FEED ROUTES
+// SUBSCRIPTION FEED ROUTES (Public - No Auth)
 // ============================================
 
 // ROUTE 9: Get subscription feed (ICS file)
@@ -482,7 +477,7 @@ app.get('/health', async (req, res) => {
     status: 'ok',
     calendars: count || 0,
     database: 'supabase',
-    auth: 'magic-link'
+    auth: 'jwt-token'
   });
 });
 
@@ -492,7 +487,7 @@ app.get('/health', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📧 Magic link auth enabled`);
+  console.log(`🔐 JWT token auth enabled`);
   console.log(`🗄️  Database: Supabase`);
   console.log(`📅 Calendar feeds: /api/subscriptions/{calendarId}/feed.ics`);
 });
