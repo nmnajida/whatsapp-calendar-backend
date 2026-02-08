@@ -1,8 +1,8 @@
-// server.js - Backend server with Google OAuth AND Calendar Subscriptions
+// server.js - Universal Calendar Backend with Magic Link Authentication
 const express = require('express');
-const { google } = require('googleapis');
 const session = require('express-session');
 const cors = require('cors');
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
@@ -12,9 +12,9 @@ const PORT = process.env.PORT || 3000;
 // Trust Railway proxy
 app.set('trust proxy', 1);
 
-// Middleware
+// CORS Configuration
 app.use(cors({
-  origin: 'https://whatsapp-calendar-frontend-omega.vercel.app',
+  origin: process.env.FRONTEND_URL || 'https://whatsapp-calendar-frontend-omega.vercel.app',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -22,6 +22,7 @@ app.use(cors({
 
 app.use(express.json());
 
+// Session Configuration
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-session-secret',
   resave: false,
@@ -30,21 +31,9 @@ app.use(session({
     secure: true,
     httpOnly: true,
     sameSite: 'none',
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
   }
 }));
-
-// In-memory storage for subscription feeds (replace with database in production)
-// const subscriptionFeeds = new Map();
-
-// Google OAuth Configuration
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.REDIRECT_URI || 'http://localhost:3000/auth/callback'
-);
-
-console.log('🔍 REDIRECT_URI:', process.env.REDIRECT_URI);
 
 // Supabase Configuration
 const supabase = createClient(
@@ -52,215 +41,255 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// Scopes define what access you need
-const SCOPES = [
-  'https://www.googleapis.com/auth/calendar',
-  'https://www.googleapis.com/auth/calendar.events'
-];
-
 // ============================================
-// ICS/RFC 5545 HELPER FUNCTIONS
+// HELPER FUNCTIONS
 // ============================================
 
-const formatDateForICS = (date) => {
-  return date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-};
+// Generate random token
+function generateToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
 
-const escapeICSText = (text) => {
-  if (!text) return '';
-  return text
-    .replace(/\\/g, '\\\\')
-    .replace(/;/g, '\\;')
-    .replace(/,/g, '\\,')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '');
-};
-
-const generateCalendarFeed = (calendar) => {
-  const events = calendar.events || [];
-  
-  let icsContent = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Calendar App//WhatsApp Calendar//EN
-CALSCALE:GREGORIAN
-METHOD:PUBLISH
-X-WR-CALNAME:${escapeICSText(calendar.name)}`;
-
-  if (calendar.description) {
-    icsContent += `\nX-WR-CALDESC:${escapeICSText(calendar.description)}`;
-  }
-
-  icsContent += `
-X-WR-TIMEZONE:UTC
-REFRESH-INTERVAL;VALUE=DURATION:PT1H
-X-PUBLISHED-TTL:PT1H
-`;
-
-  // Add each event
-  events.forEach(event => {
-    const startDate = new Date(event.date + 'T' + (event.time || '12:00'));
-    const endDate = event.endTime 
-      ? new Date(event.date + 'T' + event.endTime)
-      : new Date(startDate.getTime() + 60 * 60 * 1000);
-
-    const now = new Date();
-    const uid = event.id + '@calendar-app.com';
-
-    icsContent += `BEGIN:VEVENT
-UID:${uid}
-DTSTAMP:${formatDateForICS(now)}
-DTSTART:${formatDateForICS(startDate)}
-DTEND:${formatDateForICS(endDate)}
-SUMMARY:${escapeICSText(event.title)}`;
-
-    if (event.description) {
-      icsContent += `\nDESCRIPTION:${escapeICSText(event.description)}`;
-    }
-
-    if (event.location) {
-      icsContent += `\nLOCATION:${escapeICSText(event.location)}`;
-    }
-
-    icsContent += `
-STATUS:CONFIRMED
-SEQUENCE:0
-END:VEVENT
-`;
-  });
-
-  icsContent += `END:VCALENDAR`;
-  return icsContent;
-};
-
-// ============================================
-// GOOGLE OAUTH ROUTES
-// ============================================
-
-// ROUTE 1: Initiate OAuth flow
-// ROUTE 1: Initiate OAuth flow
-app.get('/auth/google', (req, res) => {
-  console.log('🔍 OAuth Config Check:', {
-    clientId: process.env.GOOGLE_CLIENT_ID?.substring(0, 20) + '...',
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET ? 'SET' : 'MISSING',
-    redirectUri: process.env.REDIRECT_URI
-  });
-  
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: 'offline', // Gets refresh token
-    scope: SCOPES,
-    prompt: 'consent' // Force consent screen to get refresh token
-  });
-  
-  console.log('🔍 Generated Auth URL:', authUrl);
-  
-  res.redirect(authUrl);
-});
-
-// ROUTE 2: Handle OAuth callback
-app.get('/auth/callback', async (req, res) => {
-  const { code } = req.query;
-  
-  if (!code) {
-    return res.status(400).send('No authorization code received');
-  }
+// Send magic link email via Resend
+async function sendMagicLinkEmail(email, token) {
+  const magicLink = `${process.env.BACKEND_URL || 'http://localhost:3000'}/auth/verify/${token}`;
   
   try {
-    // Exchange authorization code for tokens
-    const { tokens } = await oauth2Client.getToken(code);
-    
-    // Store tokens in session (in production, store in database)
-    req.session.tokens = tokens;
-    
-    // Set credentials for this session
-    oauth2Client.setCredentials(tokens);
-    
-    // Redirect to frontend success page
-    const frontendUrl = process.env.FRONTEND_URL || 'https://whatsapp-calendar-frontend-omega.vercel.app';
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+        to: email,
+        subject: 'Sign in to Hot Club Calendar',
+        html: `
+          <h2>Sign in to Hot Club Calendar</h2>
+          <p>Click the link below to sign in:</p>
+          <p><a href="${magicLink}" style="background-color: #4CAF50; color: white; padding: 14px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">Sign In</a></p>
+          <p>Or copy this link: ${magicLink}</p>
+          <p><small>This link expires in 15 minutes.</small></p>
+        `
+      })
+    });
 
-        console.log('🔄 About to redirect to:', `${frontendUrl}/?auth=success`);
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Resend API error: ${error}`);
+    }
 
-        res.redirect(`${frontendUrl}/?auth=success`);
+    return true;
   } catch (error) {
-    console.error('Error getting tokens:', error);
+    console.error('Error sending email:', error);
+    throw error;
+  }
+}
+
+// Generate ICS calendar feed
+function generateCalendarFeed(calendarData) {
+  const events = calendarData.events || [];
+  
+  let icsContent = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Hot Club Calendar//EN',
+    `X-WR-CALNAME:${calendarData.name}`,
+    'X-WR-TIMEZONE:UTC',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH'
+  ];
+
+  events.forEach(event => {
+    const startDateTime = new Date(event.event_date + 'T' + (event.start_time || '12:00')).toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+    const endDateTime = event.end_time 
+      ? new Date(event.event_date + 'T' + event.end_time).toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'
+      : new Date(new Date(startDateTime).getTime() + 3600000).toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+
+    icsContent.push(
+      'BEGIN:VEVENT',
+      `UID:${event.google_event_id || event.id}@hotclub.calendar`,
+      `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z`,
+      `DTSTART:${startDateTime}`,
+      `DTEND:${endDateTime}`,
+      `SUMMARY:${event.title}`,
+      event.description ? `DESCRIPTION:${event.description}` : '',
+      event.location ? `LOCATION:${event.location}` : '',
+      'STATUS:CONFIRMED',
+      'SEQUENCE:0',
+      'END:VEVENT'
+    );
+  });
+
+  icsContent.push('END:VCALENDAR');
+  
+  return icsContent.filter(line => line).join('\r\n');
+}
+
+// ============================================
+// AUTHENTICATION ROUTES
+// ============================================
+
+// ROUTE 1: Request magic link
+app.post('/auth/request-magic-link', async (req, res) => {
+  const { email } = req.body;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'Email required' });
+  }
+
+  try {
+    // Generate token
+    const token = generateToken();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    // Store magic link in database
+    const { error: linkError } = await supabase
+      .from('magic_links')
+      .insert([{
+        email: email.toLowerCase(),
+        token: token,
+        expires_at: expiresAt.toISOString()
+      }]);
+
+    if (linkError) {
+      console.error('Error storing magic link:', linkError);
+      return res.status(500).json({ error: 'Failed to generate magic link' });
+    }
+
+    // Create or update user
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email.toLowerCase())
+      .single();
+
+    if (!existingUser) {
+      await supabase
+        .from('users')
+        .insert([{ email: email.toLowerCase() }]);
+    }
+
+    // Send email
+    await sendMagicLinkEmail(email, token);
+
+    res.json({ 
+      success: true,
+      message: 'Magic link sent! Check your email.' 
+    });
+  } catch (error) {
+    console.error('Error in magic link request:', error);
+    res.status(500).json({ error: 'Failed to send magic link' });
+  }
+});
+
+// ROUTE 2: Verify magic link token
+app.get('/auth/verify/:token', async (req, res) => {
+  const { token } = req.params;
+
+  try {
+    // Check if token exists and is valid
+    const { data: magicLink, error: linkError } = await supabase
+      .from('magic_links')
+      .select('*')
+      .eq('token', token)
+      .eq('used', false)
+      .single();
+
+    if (linkError || !magicLink) {
+      return res.status(400).send('Invalid or expired magic link');
+    }
+
+    // Check if expired
+    if (new Date(magicLink.expires_at) < new Date()) {
+      return res.status(400).send('Magic link has expired');
+    }
+
+    // Mark as used
+    await supabase
+      .from('magic_links')
+      .update({ used: true })
+      .eq('token', token);
+
+    // Update user last login
+    await supabase
+      .from('users')
+      .update({ last_login: new Date().toISOString() })
+      .eq('email', magicLink.email);
+
+    // Create session
+    req.session.userEmail = magicLink.email;
+    req.session.authenticated = true;
+
+    // Redirect to frontend
+    const frontendUrl = process.env.FRONTEND_URL || 'https://whatsapp-calendar-frontend-omega.vercel.app';
+    res.redirect(`${frontendUrl}/?auth=success`);
+  } catch (error) {
+    console.error('Error verifying magic link:', error);
     res.status(500).send('Authentication failed');
   }
 });
 
-// ============================================
-// GOOGLE CALENDAR API ROUTES
-// ============================================
-
-// ROUTE 3: Get user's calendars
-app.get('/api/calendars', async (req, res) => {
-  if (!req.session.tokens) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
-  
-  try {
-    oauth2Client.setCredentials(req.session.tokens);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    
-    const response = await calendar.calendarList.list();
-    res.json(response.data.items);
-  } catch (error) {
-    console.error('Error fetching calendars:', error);
-    res.status(500).json({ error: 'Failed to fetch calendars' });
-  }
-});
-
-// ROUTE 4: Create a new calendar (Google Calendar + Subscription Feed)
-app.post('/api/calendars', async (req, res) => {
-console.log('🎯 CREATE CALENDAR REQUEST RECEIVED:', req.body);
-console.log('📋 Session check:', {
-    hasSession: !!req.session,
-    hasTokens: !!req.session?.tokens,
-    sessionID: req.sessionID
-});
-  
-  if (!req.session.tokens) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
-  
-  const { name, description } = req.body;
-  
-  try {
-    oauth2Client.setCredentials(req.session.tokens);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    
-    // Create Google Calendar
-    const newCalendar = await calendar.calendars.insert({
-      requestBody: {
-        summary: name,
-        description: description,
-        timeZone: 'UTC'
-      }
+// ROUTE 3: Check authentication status
+app.get('/api/auth/status', (req, res) => {
+  if (req.session.authenticated) {
+    res.json({ 
+      authenticated: true,
+      email: req.session.userEmail 
     });
-    
-    const calendarId = newCalendar.data.id;
-    
-    // Store in Supabase database
-    const { data: dbCalendar, error: dbError } = await supabase
-        .from('calendars')
-        .insert([{
-            google_calendar_id: calendarId,
-            name: name,
-            description: description,
-            owner_email: req.session.userEmail || 'unknown' // We'll improve this later
-  }])
-  .select()
-  .single();
+  } else {
+    res.json({ authenticated: false });
+  }
+});
 
-if (dbError) {
-  console.error('Error saving to database:', dbError);
-  // Calendar created in Google, but not in DB - log it but continue
-}
+// ROUTE 4: Logout
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy();
+  res.json({ success: true });
+});
 
-    
-    // Return calendar with subscription URLs
+// ============================================
+// CALENDAR ROUTES
+// ============================================
+
+// ROUTE 5: Create a new calendar
+app.post('/api/calendars', async (req, res) => {
+  if (!req.session.authenticated) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  const { name, description } = req.body;
+
+  try {
+    // Create calendar in Supabase
+    const { data: calendar, error: calError } = await supabase
+      .from('calendars')
+      .insert([{
+        google_calendar_id: generateToken().substring(0, 16), // Generate unique ID
+        name: name,
+        description: description,
+        owner_email: req.session.userEmail
+      }])
+      .select()
+      .single();
+
+    if (calError) {
+      console.error('Error creating calendar:', calError);
+      return res.status(500).json({ error: 'Failed to create calendar' });
+    }
+
+    // Generate subscription URLs
+    const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+    const subscriptionUrl = `${backendUrl}/api/subscriptions/${calendar.google_calendar_id}/feed.ics`;
+    const webcalUrl = subscriptionUrl.replace('https://', 'webcal://').replace('http://', 'webcal://');
+
     res.json({
-      ...newCalendar.data,
-      subscriptionUrl: `${req.protocol}://${req.get('host')}/api/subscriptions/${calendarId}/feed.ics`,
-      webcalUrl: `webcal://${req.get('host')}/api/subscriptions/${calendarId}/feed.ics`
+      id: calendar.google_calendar_id,
+      summary: calendar.name,
+      description: calendar.description,
+      subscriptionUrl: subscriptionUrl,
+      webcalUrl: webcalUrl
     });
   } catch (error) {
     console.error('Error creating calendar:', error);
@@ -268,100 +297,80 @@ if (dbError) {
   }
 });
 
-// ROUTE 5: Get events from a calendar
-app.get('/api/calendars/:calendarId/events', async (req, res) => {
-  if (!req.session.tokens) {
+// ROUTE 6: Get user's calendars
+app.get('/api/calendars', async (req, res) => {
+  if (!req.session.authenticated) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
-  
-  const { calendarId } = req.params;
-  
+
   try {
-    oauth2Client.setCredentials(req.session.tokens);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    
-    const response = await calendar.events.list({
-      calendarId: calendarId,
-      timeMin: new Date().toISOString(),
-      maxResults: 100,
-      singleEvents: true,
-      orderBy: 'startTime'
-    });
-    
-    res.json(response.data.items);
+    const { data: calendars, error } = await supabase
+      .from('calendars')
+      .select('*')
+      .eq('owner_email', req.session.userEmail);
+
+    if (error) {
+      console.error('Error fetching calendars:', error);
+      return res.status(500).json({ error: 'Failed to fetch calendars' });
+    }
+
+    res.json(calendars);
   } catch (error) {
-    console.error('Error fetching events:', error);
-    res.status(500).json({ error: 'Failed to fetch events' });
+    console.error('Error:', error);
+    res.status(500).json({ error: 'Failed to fetch calendars' });
   }
 });
 
-// ROUTE 6: Create an event (Google Calendar + Update Subscription Feed)
+// ROUTE 7: Create event
 app.post('/api/calendars/:calendarId/events', async (req, res) => {
-  if (!req.session.tokens) {
+  if (!req.session.authenticated) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
-  
+
   const { calendarId } = req.params;
-  const { title, description, startDateTime, endDateTime, location, date, time, endTime } = req.body;
-  
+  const { title, description, location, date, time, endTime } = req.body;
+
   try {
-    oauth2Client.setCredentials(req.session.tokens);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    
-    // Handle both date formats (ISO string or date+time)
-    let start, end;
-    if (startDateTime && endDateTime) {
-      start = { dateTime: startDateTime, timeZone: 'UTC' };
-      end = { dateTime: endDateTime, timeZone: 'UTC' };
-    } else if (date) {
-      const startDate = new Date(date + 'T' + (time || '12:00'));
-      const endDate = endTime 
-        ? new Date(date + 'T' + endTime)
-        : new Date(startDate.getTime() + 60 * 60 * 1000);
-      start = { dateTime: startDate.toISOString(), timeZone: 'UTC' };
-      end = { dateTime: endDate.toISOString(), timeZone: 'UTC' };
+    // Get calendar to verify ownership
+    const { data: calendar, error: calError } = await supabase
+      .from('calendars')
+      .select('id')
+      .eq('google_calendar_id', calendarId)
+      .eq('owner_email', req.session.userEmail)
+      .single();
+
+    if (calError || !calendar) {
+      return res.status(404).json({ error: 'Calendar not found' });
     }
+
+    // Create event in Supabase
+    const eventId = generateToken().substring(0, 16);
     
-    const event = {
-      summary: title,
-      description: description,
-      location: location,
-      start: start,
-      end: end
-    };
-    
-    const response = await calendar.events.insert({
-      calendarId: calendarId,
-      requestBody: event
-    });
-    
-    // Save event to database
-    const { data: dbEvent, error: eventError } = await supabase
-    .from('events')
-    .insert([{
-        calendar_id: (await supabase
-        .from('calendars')
-        .select('id')
-        .eq('google_calendar_id', calendarId)
-        .single()).data.id,
-        google_event_id: response.data.id,
+    const { data: event, error: eventError } = await supabase
+      .from('events')
+      .insert([{
+        calendar_id: calendar.id,
+        google_event_id: eventId,
         title: title,
         description: description,
         location: location,
         event_date: date,
         start_time: time,
         end_time: endTime
-    }])
-    .select()
-    .single();
+      }])
+      .select()
+      .single();
 
     if (eventError) {
-    console.error('Error saving event to database:', eventError);
+      console.error('Error creating event:', eventError);
+      return res.status(500).json({ error: 'Failed to create event' });
     }
-    
+
     res.json({
-      ...response.data,
-      message: 'Event added to Google Calendar and subscription feed'
+      id: event.google_event_id,
+      summary: event.title,
+      start: { dateTime: `${date}T${time}` },
+      end: { dateTime: `${date}T${endTime}` }
     });
   } catch (error) {
     console.error('Error creating event:', error);
@@ -369,244 +378,121 @@ app.post('/api/calendars/:calendarId/events', async (req, res) => {
   }
 });
 
-// ROUTE 7: Delete an event (Google Calendar + Update Subscription Feed)
+// ROUTE 8: Delete event
 app.delete('/api/calendars/:calendarId/events/:eventId', async (req, res) => {
-  if (!req.session.tokens) {
+  if (!req.session.authenticated) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
-  
+
   const { calendarId, eventId } = req.params;
-  
+
   try {
-    oauth2Client.setCredentials(req.session.tokens);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    
-    await calendar.events.delete({
-      calendarId: calendarId,
-      eventId: eventId
-    });
-    
-    // Delete from database
+    // Verify calendar ownership
+    const { data: calendar } = await supabase
+      .from('calendars')
+      .select('id')
+      .eq('google_calendar_id', calendarId)
+      .eq('owner_email', req.session.userEmail)
+      .single();
+
+    if (!calendar) {
+      return res.status(404).json({ error: 'Calendar not found' });
+    }
+
+    // Delete event
     const { error: deleteError } = await supabase
       .from('events')
       .delete()
-      .eq('google_event_id', eventId);
-    
+      .eq('google_event_id', eventId)
+      .eq('calendar_id', calendar.id);
+
     if (deleteError) {
-      console.error('Error deleting event from database:', deleteError);
+      console.error('Error deleting event:', deleteError);
+      return res.status(500).json({ error: 'Failed to delete event' });
     }
-    
-    res.json({ 
-      success: true,
-      message: 'Event deleted from Google Calendar and database'
-    });
+
+    res.json({ success: true, message: 'Event deleted' });
   } catch (error) {
-    console.error('Error deleting event:', error);
+    console.error('Error:', error);
     res.status(500).json({ error: 'Failed to delete event' });
   }
 });
 
-// ROUTE 8: Share calendar with someone
-app.post('/api/calendars/:calendarId/share', async (req, res) => {
-  if (!req.session.tokens) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
-  
+// ============================================
+// SUBSCRIPTION FEED ROUTES
+// ============================================
+
+// ROUTE 9: Get subscription feed (ICS file)
+app.get('/api/subscriptions/:calendarId/feed.ics', async (req, res) => {
   const { calendarId } = req.params;
-  const { email, role } = req.body; // role: 'reader', 'writer', 'owner'
-  
+
   try {
-    oauth2Client.setCredentials(req.session.tokens);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    
-    const acl = await calendar.acl.insert({
-      calendarId: calendarId,
-      requestBody: {
-        role: role || 'reader',
-        scope: {
-          type: 'user',
-          value: email
-        }
-      }
-    });
-    
-    res.json(acl.data);
-  } catch (error) {
-    console.error('Error sharing calendar:', error);
-    res.status(500).json({ error: 'Failed to share calendar' });
-  }
-});
-
-// ============================================
-// CALENDAR SUBSCRIPTION FEED ROUTES (NEW)
-// ============================================
-
-    // ROUTE 9: Get calendar subscription feed (ICS format)
-    app.get('/api/subscriptions/:calendarId/feed.ics', async (req, res) => {
-    const { calendarId } = req.params;
-    
-    // Get calendar from database
+    // Get calendar
     const { data: calendar, error: calError } = await supabase
-        .from('calendars')
-        .select('*')
-        .eq('google_calendar_id', calendarId)
-        .single();
+      .from('calendars')
+      .select('*')
+      .eq('google_calendar_id', calendarId)
+      .single();
 
-    if (calError) {
-    console.error('Error fetching calendar:', calError);
-    return res.status(404).send('Calendar not found');
+    if (calError || !calendar) {
+      return res.status(404).send('Calendar not found');
     }
-  
-    // Get events from database
+
+    // Get events
     const { data: events, error: eventsError } = await supabase
-        .from('events')
-        .select('*')
-        .eq('calendar_id', calendar.id)
-        .order('event_date', { ascending: true });
+      .from('events')
+      .select('*')
+      .eq('calendar_id', calendar.id)
+      .order('event_date', { ascending: true });
 
     if (eventsError) {
-    console.error('Error fetching events:', eventsError);
+      console.error('Error fetching events:', eventsError);
     }
 
-    // Format for ICS generation
-    let calendarData = {
-    id: calendar.google_calendar_id,
-    name: calendar.name,
-    description: calendar.description,
-    events: (events || []).map(e => ({
-        id: e.google_event_id,
-        title: e.title,
-        description: e.description,
-        location: e.location,
-        date: e.event_date,
-        time: e.start_time,
-        endTime: e.end_time,
-        googleEventId: e.google_event_id
-    }))
+    // Generate ICS feed
+    const calendarData = {
+      id: calendar.google_calendar_id,
+      name: calendar.name,
+      description: calendar.description,
+      events: events || []
     };
 
-  // If not in subscription feeds but authenticated, try to fetch from Google Calendar
-  if (!calendarData && req.session && req.session.tokens) {
-    try {
-      oauth2Client.setCredentials(req.session.tokens);
-      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-      
-      // Get calendar info
-      const calInfo = await calendar.calendars.get({ calendarId: calendarId });
-      
-      // Get events
-      const eventsResponse = await calendar.events.list({
-        calendarId: calendarId,
-        timeMin: new Date().toISOString(),
-        maxResults: 100,
-        singleEvents: true,
-        orderBy: 'startTime'
-      });
-      
-      // Convert Google Calendar events to our format
-      const events = eventsResponse.data.items.map(event => {
-        const start = new Date(event.start.dateTime || event.start.date);
-        const end = new Date(event.end.dateTime || event.end.date);
-        
-        return {
-          id: event.id,
-          title: event.summary,
-          description: event.description,
-          location: event.location,
-          date: start.toISOString().split('T')[0],
-          time: start.toISOString().split('T')[1].substring(0, 5),
-          endTime: end.toISOString().split('T')[1].substring(0, 5),
-          googleEventId: event.id
-        };
-      });
-      
-      calendarData = {
-        id: calendarId,
-        name: calInfo.data.summary,
-        description: calInfo.data.description,
-        events: events
-      };
-      
-      // Data is already in database from Google Calendar sync
-    } catch (error) {
-      console.error('Error fetching from Google Calendar:', error);
-    }
-  }
-  
-  if (!calendarData) {
-    return res.status(404).send('Calendar not found');
-  }
-  
-  const icsContent = generateCalendarFeed(calendarData);
-  
-  res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
-  res.setHeader('Content-Disposition', `inline; filename="${calendarData.name.replace(/[^a-z0-9]/gi, '_')}.ics"`);
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.send(icsContent);
-});
+    const icsContent = generateCalendarFeed(calendarData);
 
-// ROUTE 10: Update subscription feed manually (DEPRECATED - using database now)
-// This route is no longer needed since we use Supabase database
-// Keeping it for backwards compatibility but it does nothing
-app.post('/api/subscriptions/:calendarId', (req, res) => {
-  const { calendarId } = req.params;
-  
-  // Just return success - data is in database
-  res.json({
-    success: true,
-    calendarId,
-    subscriptionUrl: `${req.protocol}://${req.get('host')}/api/subscriptions/${calendarId}/feed.ics`,
-    webcalUrl: `webcal://${req.get('host')}/api/subscriptions/${calendarId}/feed.ics`
-  });
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${calendar.name}.ics"`);
+    res.send(icsContent);
+  } catch (error) {
+    console.error('Error generating feed:', error);
+    res.status(500).send('Failed to generate calendar feed');
+  }
 });
 
 // ============================================
-// AUTHENTICATION & UTILITY ROUTES
+// UTILITY ROUTES
 // ============================================
 
-// ROUTE 11: Check authentication status
-app.get('/api/auth/status', (req, res) => {
-  res.json({
-    authenticated: !!req.session.tokens,
-    tokens: req.session.tokens ? 'present' : 'none'
-  });
-});
-
-// ROUTE 12: Logout
-app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy();
-  res.json({ success: true });
-});
-
-// ROUTE 13: Health check
+// Health check
 app.get('/health', async (req, res) => {
-  // Count calendars in database
   const { count } = await supabase
     .from('calendars')
     .select('*', { count: 'exact', head: true });
-  
-  res.json({ 
-    status: 'ok', 
+
+  res.json({
+    status: 'ok',
     calendars: count || 0,
-    googleOAuth: !!process.env.GOOGLE_CLIENT_ID,
-    database: 'supabase'
+    database: 'supabase',
+    auth: 'magic-link'
   });
 });
 
-// Handle token refresh automatically
-oauth2Client.on('tokens', (tokens) => {
-  if (tokens.refresh_token) {
-    // Store refresh token in database in production
-    console.log('New refresh token received');
-  }
-  console.log('Access token refreshed');
-});
+// ============================================
+// START SERVER
+// ============================================
 
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`Initiate OAuth: http://localhost:${PORT}/auth/google`);
-  console.log(`Subscription feeds: http://localhost:${PORT}/api/subscriptions/{calendarId}/feed.ics`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`📧 Magic link auth enabled`);
+  console.log(`🗄️  Database: Supabase`);
+  console.log(`📅 Calendar feeds: /api/subscriptions/{calendarId}/feed.ics`);
 });
-
-// Export for testing
-module.exports = app;
