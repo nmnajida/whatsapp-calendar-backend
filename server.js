@@ -26,9 +26,17 @@ app.use(cors({
 app.use(express.json());
 
 // Supabase Configuration
+// Public client (anon key) - for regular operations
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
+);
+
+// Admin client (service_role key) - for magic_links and users table
+// This bypasses Row Level Security (RLS)
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 // ============================================
@@ -162,7 +170,7 @@ app.post('/auth/request-magic-link', async (req, res) => {
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
 
     // Store magic link in database
-    const { error: linkError } = await supabase
+    const { error: linkError } = await supabaseAdmin
       .from('magic_links')
       .insert([{
         email: email.toLowerCase(),
@@ -176,14 +184,14 @@ app.post('/auth/request-magic-link', async (req, res) => {
     }
 
     // Create or update user
-    const { data: existingUser } = await supabase
+    const { data: existingUser } = await supabaseAdmin
       .from('users')
       .select('id')
       .eq('email', email.toLowerCase())
       .single();
 
     if (!existingUser) {
-      await supabase
+      await supabaseAdmin
         .from('users')
         .insert([{ email: email.toLowerCase() }]);
     }
@@ -207,7 +215,7 @@ app.get('/auth/verify/:token', async (req, res) => {
 
   try {
     // Check if token exists and is valid
-    const { data: magicLink, error: linkError } = await supabase
+    const { data: magicLink, error: linkError } = await supabaseAdmin
       .from('magic_links')
       .select('*')
       .eq('token', token)
@@ -224,13 +232,13 @@ app.get('/auth/verify/:token', async (req, res) => {
     }
 
     // Mark as used
-    await supabase
+    await supabaseAdmin
       .from('magic_links')
       .update({ used: true })
       .eq('token', token);
 
     // Update user last login
-    await supabase
+    await supabaseAdmin
       .from('users')
       .update({ last_login: new Date().toISOString() })
       .eq('email', magicLink.email);
