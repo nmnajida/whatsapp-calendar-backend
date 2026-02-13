@@ -119,7 +119,8 @@ function generateCalendarFeed(calendarData) {
   let icsContent = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//Hot Club Calendar//EN',
+    'PRODID:-//Telematrix Calendar//EN',
+    `NAME:${calendarData.name}`,
     `X-WR-CALNAME:${calendarData.name}`,
     'X-WR-TIMEZONE:UTC',
     'CALSCALE:GREGORIAN',
