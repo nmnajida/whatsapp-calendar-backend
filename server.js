@@ -326,11 +326,57 @@ app.get('/api/calendars', authenticateToken, async (req, res) => {
     }
 
     res.json(calendars);
+      } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ error: 'Failed to fetch calendars' });
+      }
+    });
+
+    // Delete calendar and all its events
+    app.delete('/api/calendars/:calendarId', authenticateToken, async (req, res) => {
+    const { calendarId } = req.params;
+  
+  try {
+    // Verify calendar ownership
+    const { data: calendar, error: fetchError } = await supabase
+      .from('calendars')
+      .select('*')
+      .eq('google_calendar_id', calendarId)
+      .eq('owner_email', req.userEmail)
+      .single();
+
+    if (fetchError || !calendar) {
+      return res.status(404).json({ error: 'Calendar not found or unauthorized' });
+    }
+
+    // Delete all events for this calendar first
+    const { error: eventsError } = await supabase
+      .from('events')
+      .delete()
+      .eq('calendar_id', calendar.id);
+
+    if (eventsError) {
+      console.error('Error deleting events:', eventsError);
+      return res.status(500).json({ error: 'Failed to delete calendar events' });
+    }
+
+    // Delete the calendar
+    const { error: calendarError } = await supabase
+      .from('calendars')
+      .delete()
+      .eq('id', calendar.id);
+
+    if (calendarError) {
+      console.error('Error deleting calendar:', calendarError);
+      return res.status(500).json({ error: 'Failed to delete calendar' });
+    }
+
+    res.json({ success: true, message: 'Calendar deleted successfully' });
   } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: 'Failed to fetch calendars' });
+    console.error('Error deleting calendar:', error);
+    res.status(500).json({ error: 'Failed to delete calendar' });
   }
-});
+  });
 
 // ROUTE 7: Create event
 app.post('/api/calendars/:calendarId/events', authenticateToken, async (req, res) => {
