@@ -249,7 +249,31 @@ app.get('/auth/verify/:token', async (req, res) => {
 
     // Redirect to frontend with JWT token
     const frontendUrl = process.env.FRONTEND_URL || 'https://whatsapp-calendar-frontend-omega.vercel.app';
-    res.redirect(`${frontendUrl}/?token=${jwtToken}`);
+    const redirectUrl = `${frontendUrl}/?token=${jwtToken}`;
+    
+    // Send HTML that tries to use opener window if available, otherwise redirects current window
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Signing in...</title>
+          <meta http-equiv="refresh" content="0; url=${redirectUrl}">
+        </head>
+        <body>
+          <script>
+            // If this was opened from another tab (the welcome screen), redirect that tab instead
+            if (window.opener && !window.opener.closed) {
+              window.opener.location.href = '${redirectUrl}';
+              window.close();
+            } else {
+              // Otherwise redirect this window
+              window.location.href = '${redirectUrl}';
+            }
+          </script>
+          <p>Signing you in...</p>
+        </body>
+      </html>
+    `);
   } catch (error) {
     console.error('Error verifying magic link:', error);
     res.status(500).send('Authentication failed');
