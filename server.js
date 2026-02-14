@@ -379,7 +379,43 @@ app.get('/api/calendars', authenticateToken, async (req, res) => {
   }
   });
 
-// ROUTE 7: Create event
+// ROUTE 7: Get events for a calendar
+app.get('/api/calendars/:calendarId/events', authenticateToken, async (req, res) => {
+  const { calendarId } = req.params;
+  
+  try {
+    // Get calendar to verify ownership
+    const { data: calendar, error: calError } = await supabase
+      .from('calendars')
+      .select('id')
+      .eq('google_calendar_id', calendarId)
+      .eq('owner_email', req.userEmail)
+      .single();
+
+    if (calError || !calendar) {
+      return res.status(404).json({ error: 'Calendar not found' });
+    }
+
+    // Get events for this calendar
+    const { data: events, error: eventsError } = await supabase
+      .from('events')
+      .select('*')
+      .eq('calendar_id', calendar.id)
+      .order('event_date', { ascending: true });
+
+    if (eventsError) {
+      console.error('Error fetching events:', eventsError);
+      return res.status(500).json({ error: 'Failed to fetch events' });
+    }
+
+    res.json(events || []);
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ error: 'Failed to fetch events' });
+  }
+});
+
+// ROUTE 8: Create event
 app.post('/api/calendars/:calendarId/events', authenticateToken, async (req, res) => {
   const { calendarId } = req.params;
   const { title, description, location, date, time, endTime } = req.body;
