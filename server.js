@@ -17,7 +17,33 @@ app.set('trust proxy', 1);
 
 // CORS Configuration
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'https://whatsapp-calendar-frontend-omega.vercel.app',
+  origin: function(origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Allow your Vercel frontend (including preview deployments)
+    const allowedOrigins = [
+      'https://whatsapp-calendar-frontend-omega.vercel.app',
+      /^https:\/\/whatsapp-calendar-frontend-.*\.vercel\.app$/,
+      process.env.FRONTEND_URL
+    ].filter(Boolean);
+    
+    // Check if origin matches
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (typeof allowed === 'string') {
+        return origin === allowed;
+      } else if (allowed instanceof RegExp) {
+        return allowed.test(origin);
+      }
+      return false;
+    });
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
